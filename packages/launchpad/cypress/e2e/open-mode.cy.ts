@@ -1,21 +1,45 @@
 import type { SinonStub } from 'sinon'
 import defaultMessages from '@packages/frontend-shared/src/locales/en-US.json'
+import { GET_MAJOR_VERSION_FOR_CONTENT } from '@packages/types'
 
 describe('Launchpad: Open Mode', () => {
   describe('global mode', () => {
-    beforeEach(() => {
+    it('shows a loading spinner before application mounts, and cleans up after mount', () => {
       cy.openGlobalMode()
+
+      // Since these elements are removed when JS runs and the app mounts,
+      // they are gone by the time Cypress can assert about them
+      // but we can still make sure they are provided in the HTML payload
+      cy.request(`/__launchpad/index.html`)
+      .should(({ body }) => {
+        expect(body.includes('data-cy="plain-html-loading-spinner"')).to.be.true
+        expect(body.includes('data-cy="plain-html-spinner-styles"')).to.be.true
+      })
+
       cy.visitLaunchpad()
+      cy.findByTestId('plain-html-loading-spinner').should('not.exist')
+      cy.findByTestId('plain-html-spinner-styles').should('not.exist')
     })
 
     it('shows Add Project when no projects have been added', () => {
+      cy.openGlobalMode()
+      cy.visitLaunchpad()
       cy.get('h1').should('contain', defaultMessages.globalPage.empty.title)
     })
 
     it('shows the projects page when a project is not specified', () => {
+      cy.openGlobalMode()
       cy.addProject('todos')
       cy.visitLaunchpad()
       cy.contains(defaultMessages.globalPage.recentProjectsHeader)
+    })
+
+    it('does not show Welcome screen on next Launchpad visit when it has already been dismissed', () => {
+      cy.visitLaunchpad({ showWelcome: true })
+      cy.skipWelcome()
+      cy.visitLaunchpad({ showWelcome: true })
+      cy.contains('button', 'Continue').should('not.exist')
+      cy.get('h1').should('contain', defaultMessages.globalPage.empty.title)
     })
   })
 
@@ -34,11 +58,41 @@ describe('Launchpad: Open Mode', () => {
         o.sinon.spy(ctx.util.fetch)
       })
 
+      cy.withCtx(async (ctx, o) => {
+        await ctx.config.localSettingsApi.setPreferences({
+          notifyWhenRunCompletes: ['failed'],
+        })
+      })
+
       cy.scaffoldProject('todos')
       cy.openProject('todos', ['--e2e'])
     })
 
-    it('includes x-framework and x-dev-server, even when launched in e2e mode', () => {
+    it('includes `x-framework`, `x-dev-server`, and `x-dependencies` headers, even when launched in e2e mode if this is the initial launch of Cypress', () => {
+      cy.withCtx((ctx) => {
+        ctx.versions['_initialLaunch'] = true
+      })
+
+      cy.visitLaunchpad({ showWelcome: true })
+      cy.skipWelcome()
+      cy.get('h1').should('contain', 'Choose a browser')
+      cy.withCtx((ctx, o) => {
+        expect(ctx.util.fetch).to.have.been.calledWithMatch('https://download.cypress.io/desktop.json', {
+          headers: {
+            'x-framework': 'react',
+            'x-dev-server': 'webpack',
+            'x-notifications': 'failed',
+            'x-dependencies': 'typescript@5.3.3',
+          },
+        })
+      })
+    })
+
+    it('does not include `x-dependencies` header, if this is not the initial launch of Cypress', () => {
+      cy.withCtx((ctx) => {
+        ctx.versions['_initialLaunch'] = false
+      })
+
       cy.visitLaunchpad()
       cy.get('h1').should('contain', 'Choose a browser')
       cy.withCtx((ctx, o) => {
@@ -79,13 +133,56 @@ describe('Launchpad: Open Mode', () => {
     })
   })
 
-  it('goes to component test onboarding when launched with --component and not configured', () => {
-    cy.scaffoldProject('launchpad')
-    cy.openProject('launchpad', ['--component'])
-    cy.visitLaunchpad()
-    cy.get('[data-cy=header-bar-content]').contains('component testing', { matchCase: false })
-    // Component testing is not configured for the todo project
-    cy.get('h1').should('contain', 'Project setup')
+  describe('when launched with --component and not configured', () => {
+    beforeEach(() => {
+      cy.scaffoldProject('react-vite-ts-unconfigured')
+    })
+
+    it('goes to component test onboarding', () => {
+      cy.openProject('react-vite-ts-unconfigured', ['--component'])
+      cy.visitLaunchpad()
+
+      cy.get('[data-cy=header-bar-content]').contains('component testing', { matchCase: false })
+      // Component testing is not configured for the todo project
+      cy.get('h1').should('contain', 'Project setup')
+    })
+
+    it('detects CT project framework', () => {
+      cy.withCtx(async (ctx, o) => {
+        // Mock wizard initialization taking a long time by replacing
+        // implementation with no-op and proceeding
+        o.sinon.stub(ctx.actions.wizard, 'initialize').resolves()
+      })
+
+      cy.openProject('react-vite-ts-unconfigured', ['--component'])
+      cy.visitLaunchpad()
+
+      cy.get('[data-testid="select-framework"]').as('framework')
+
+      // Validate that UI presents an "empty" state since auto-detection did not fire
+      cy.get('@framework').within(() => {
+        cy.contains('Pick a framework', { timeout: 100 }).should('be.visible')
+      })
+
+      cy.withCtx(async (ctx, o) => {
+        // Trigger actual wizard initialization to occur
+        (ctx.actions.wizard.initialize as SinonStub).wrappedMethod.apply(ctx.actions.wizard)
+      })
+
+      // Verify that auto-detection has fired via the real initialize call and updated data
+      // has flowed through to populate UI
+      cy.get('[data-testid="select-bundler"]').as('bundler')
+
+      cy.get('@framework').within(() => {
+        cy.contains('React.js').should('be.visible')
+        cy.contains('(detected)').should('be.visible')
+      })
+
+      cy.get('@bundler').within(() => {
+        cy.contains('Vite').should('be.visible')
+        cy.contains('(detected)').should('be.visible')
+      })
+    })
   })
 
   // since circle cannot have firefox installed by default,
@@ -108,7 +205,7 @@ describe('Launchpad: Open Mode', () => {
       cy.get('button[data-cy=launch-button]').invoke('text').should('include', 'Start E2E Testing in Firefox')
     })
 
-    it('auto-launches the browser when launched with --browser --testingType --project', () => {
+    it('auto-launches the browser when launched with --browser --testingType --project, after Major Version Welcome is dismissed', () => {
       cy.scaffoldProject('launchpad')
       cy.openProject('launchpad', ['--browser', 'firefox', '--e2e'])
       cy.withCtx((ctx, o) => {
@@ -117,6 +214,32 @@ describe('Launchpad: Open Mode', () => {
 
       // Need to visit after args have been configured, todo: fix in #18776
       cy.visitLaunchpad()
+
+      cy.get('h1').should('contain', 'Choose a browser')
+      cy.get('[data-cy-browser=firefox]').should('have.attr', 'aria-checked', 'true')
+      cy.get('button[data-cy=launch-button]').invoke('text').should('include', 'Start E2E Testing in Firefox')
+
+      cy.withRetryableCtx((ctx) => {
+        expect(ctx._apis.projectApi.launchProject).to.be.calledOnce
+      })
+    })
+
+    it('auto-launches the browser when launched with --browser --testingType --project if there is no major version welcome screen', () => {
+      cy.withCtx((ctx, o) => {
+        o.sinon.stub(ctx._apis.projectApi, 'launchProject').resolves()
+        o.sinon.stub(ctx._apis.localSettingsApi, 'getPreferences').resolves({ majorVersionWelcomeDismissed: {
+          [o.MAJOR_VERSION_FOR_CONTENT]: Date.now(),
+        } })
+      }, {
+        MAJOR_VERSION_FOR_CONTENT: GET_MAJOR_VERSION_FOR_CONTENT(),
+      })
+
+      cy.scaffoldProject('launchpad')
+      cy.openProject('launchpad', ['--browser', 'firefox', '--e2e'])
+
+      // Need to visit after args have been configured, todo: fix in #18776
+      cy.visitLaunchpad()
+
       cy.get('h1').should('contain', 'Choose a browser')
       cy.get('[data-cy-browser=firefox]').should('have.attr', 'aria-checked', 'true')
       cy.get('button[data-cy=launch-button]').invoke('text').should('include', 'Start E2E Testing in Firefox')

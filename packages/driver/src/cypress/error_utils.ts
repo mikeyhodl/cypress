@@ -16,9 +16,9 @@ const crossOriginScriptRe = /^script error/i
 
 if (!Error.captureStackTrace) {
   Error.captureStackTrace = (err, fn) => {
-    const stack = (new Error()).stack;
+    const stack = (new Error()).stack
 
-    (err as Error).stack = $stackUtils.stackWithLinesDroppedFromMarker(stack, fn?.name)
+    ;(err as Error).stack = $stackUtils.stackWithLinesDroppedFromMarker(stack, fn?.name)
   }
 }
 
@@ -136,7 +136,7 @@ const getUserInvocationStack = (err, state) => {
   // command errors and command assertion errors (default assertion or cy.should)
   // have the invocation stack attached to the current command
   // prefer err.userInvocation stack if it's been set
-  let userInvocationStack = getUserInvocationStackFromError(err) || state('currentAssertionUserInvocationStack')
+  let userInvocationStack = err.userInvocationStack || state('currentAssertionUserInvocationStack')
 
   // if there is no user invocation stack from an assertion or it is the default
   // assertion, meaning it came from a command (e.g. cy.get), prefer the
@@ -148,11 +148,20 @@ const getUserInvocationStack = (err, state) => {
     !userInvocationStack
     || err.isDefaultAssertionErr
     || (currentAssertionCommand && !current?.get('followedByShouldCallback'))
+    || withInvocationStack?.get('selector')
   ) {
     userInvocationStack = withInvocationStack?.get('userInvocationStack')
   }
 
   if (!userInvocationStack) return
+
+  // In CT with vite, the user invocation stack includes internal cypress code, so clean it up
+
+  // remove lines that are included _prior_ to the first userland line
+  userInvocationStack = $stackUtils.stackWithLinesDroppedFromMarker(userInvocationStack, '/__cypress', true)
+
+  // remove lines that are included _after and including_ the replacement marker
+  userInvocationStack = $stackUtils.stackPriorToReplacementMarker(userInvocationStack)
 
   if (
     isCypressErr(err)
@@ -187,19 +196,34 @@ const appendErrMsg = (err, errMsg) => {
   })
 }
 
-const makeErrFromObj = (obj) => {
-  const err2 = new Error(obj.message)
+const makeErrFromObj = (obj: any) => {
+  if (_.isString(obj)) {
+    return new Error(obj)
+  }
 
-  err2.name = obj.name
-  err2.stack = obj.stack
-
-  _.each(obj, (val, prop) => {
-    if (!err2[prop]) {
-      err2[prop] = val
+  if (_.isObject(obj) && _.isString((obj as any).message) && _.isString((obj as any).name)) {
+    obj = obj as {
+      message: string
+      name: string
+      stack?: string
     }
-  })
 
-  return err2
+    const err2 = new Error(obj.message)
+
+    err2.name = (obj as any).name
+    err2.stack = (obj as any).stack
+
+    _.each(obj, (val, prop) => {
+      if (!err2[prop]) {
+        err2[prop] = val
+      }
+    })
+
+    return err2
+  }
+
+  // handle all other errors gracefully (e.g. a promise is rejected with undefined)
+  return new Error(`An unknown error has occurred: ${obj}`)
 }
 
 const makeErrFromErr = (err, options: any = {}) => {
@@ -212,12 +236,12 @@ const makeErrFromErr = (err, options: any = {}) => {
   // assume onFail is a command if
   // onFail is present and isn't a function
   if (onFail && !_.isFunction(onFail)) {
-    const command = onFail
+    const log = onFail
 
     // redefine onFail and automatically
     // hook this into our command
     onFail = (err) => {
-      return command.error(err)
+      return log.error(err)
     }
   }
 
@@ -262,7 +286,8 @@ const warnByPath = (errPath, options: any = {}) => {
 }
 
 export class InternalCypressError extends Error {
-  onFail?: undefined | Function
+  onFail?: Function
+  isRecovered?: boolean
 
   constructor (message) {
     super(message)
@@ -279,7 +304,8 @@ export class CypressError extends Error {
   docsUrl?: string
   retry?: boolean
   userInvocationStack?: any
-  onFail?: undefined | Function
+  onFail?: Function
+  isRecovered?: boolean
 
   constructor (message) {
     super(message)
@@ -296,10 +322,6 @@ export class CypressError extends Error {
 
     return this
   }
-}
-
-const getUserInvocationStackFromError = (err) => {
-  return err.userInvocationStack
 }
 
 const internalErr = (err): InternalCypressError => {
@@ -546,9 +568,11 @@ const errorFromUncaughtEvent = (handlerType: HandlerType, event) => {
     errorFromProjectRejectionEvent(event)
 }
 
-const logError = (Cypress, handlerType: HandlerType, err, handled = false) => {
+const logError = (Cypress, handlerType: HandlerType, err: unknown, handled = false) => {
+  const error = toLoggableError(err)
+
   Cypress.log({
-    message: `${err.name}: ${err.message}`,
+    message: `${error.name || 'Error'}: ${error.message}`,
     name: 'uncaught exception',
     type: 'parent',
     // specifying the error causes the log to be red/failed
@@ -567,6 +591,25 @@ const logError = (Cypress, handlerType: HandlerType, err, handled = false) => {
       return consoleObj
     },
   })
+}
+
+interface LoggableError { name?: string, message: string }
+
+const isLoggableError = (error: unknown): error is LoggableError => {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error)
+}
+
+const toLoggableError = (maybeError: unknown): LoggableError => {
+  if (isLoggableError(maybeError)) return maybeError
+
+  try {
+    return { message: JSON.stringify(maybeError) }
+  } catch {
+    return { message: String(maybeError) }
+  }
 }
 
 const getUnsupportedPlugin = (runnable) => {
@@ -598,7 +641,6 @@ export default {
   errorFromUncaughtEvent,
   getUnsupportedPlugin,
   getUserInvocationStack,
-  getUserInvocationStackFromError,
   isAssertionErr,
   isChaiValidationErr,
   isCypressErr,

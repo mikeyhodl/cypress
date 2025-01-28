@@ -19,8 +19,6 @@ All other tests will be marked pending, see why in the [Cypress test statuses](h
 
 If you have multiple spec files, all specs will be loaded, and every test will be filtered the same way, since the grep is run-time operation and cannot eliminate the spec files without loading them. If you want to run only specific tests, use the built-in [--spec](https://on.cypress.io/command-line#cypress-run-spec-lt-spec-gt) CLI argument.
 
-Watch the video [intro to cypress-grep plugin](https://www.youtube.com/watch?v=HS-Px-Sghd8)
-
 Table of Contents
 
 <!-- MarkdownTOC autolink="true" -->
@@ -53,14 +51,10 @@ Table of Contents
   - [Debugging in the plugin](#debugging-in-the-plugin)
   - [Debugging in the browser](#debugging-in-the-browser)
 - [Examples](#examples)
-- [See also](#see-also)
 - [Migration guide](#migration-guide)
   - [from v1 to v2](#from-v1-to-v2)
   - [from v2 to v3](#from-v2-to-v3)
-- [Videos & Blog Posts](#videos--blog-posts)
-- [Blog posts](#blog-posts)
 - [Small print](#small-print)
-- [MIT License](#mit-license)
 
 <!-- /MarkdownTOC -->
 
@@ -79,17 +73,27 @@ yarn add -D @cypress/grep
 
 ### Support file
 
-**required:** load this module from the [support file](https://on.cypress.io/writing-and-organizing-tests#Support-file) or at the top of the spec file if not using the support file. You improve the registration function and then call it:
+**required:** load this module from the [support file](https://on.cypress.io/writing-and-organizing-tests#Support-file) or at the top of the spec file if not using the support file. You import the registration function and then call it:
 
 ```js
-// cypress/support/index.js
+// cypress/support/e2e.js
 // load and register the grep feature using "require" function
-// https://github.com/cypress-io/cypress-grep
-const registerCypressGrep = require('cypress-grep')
+// https://github.com/cypress-io/cypress/tree/develop/npm/grep
+const registerCypressGrep = require('@cypress/grep')
 registerCypressGrep()
 
 // if you want to use the "import" keyword
-import registerCypressGrep from 'cypress-grep'
+// note: `./index.d.ts` currently extends the global Cypress types and
+// does not define `registerCypressGrep` so the import path is directly
+// pointed to the `support.js` file
+import registerCypressGrep from '@cypress/grep/src/support'
+registerCypressGrep()
+
+
+// "import" with `@ts-ignore`
+// @see error 2306 https://github.com/microsoft/TypeScript/blob/3fcd1b51a1e6b16d007b368229af03455c7d5794/src/compiler/diagnosticMessages.json#L1635
+// @ts-ignore
+import registerCypressGrep from '@cypress/grep'
 registerCypressGrep()
 ```
 
@@ -102,14 +106,14 @@ registerCypressGrep()
 {
   e2e: {
     setupNodeEvents(on, config) {
-      require('cypress-grep/src/plugin')(config);
+      require('@cypress/grep/src/plugin')(config);
       return config;
-  },
+    },
   }
 }
 ```
 
-Installing the plugin via `setupNodeEvents()` is required to enable the [grepFilterSpecs](#grepfilterspecs) feature.
+Installing the plugin via `setupNodeEvents()` is required to enable the [grepFilterSpecs](#pre-filter-specs-grepfilterspecs) feature.
 
 ## Usage Overview
 
@@ -207,7 +211,7 @@ $ npx cypress run --env grep="-hello world"
 $ npx cypress run --env grep="hello; -world"
 ```
 
-**Note:** Inverted title filter is not compativle with the `grepFilterSpecs` option
+**Note:** Inverted title filter is not compatible with the `grepFilterSpecs` option
 
 ## Filter with tags
 
@@ -277,7 +281,7 @@ If you want to run all tests with tag `@slow` but without tag `@smoke`:
 --env grepTags=@slow+-@smoke
 ```
 
-**Note:** Inverted tag filter is not compativle with the `grepFilterSpecs` option
+**Note:** Inverted tag filter is not compatible with the `grepFilterSpecs` option
 
 ### NOT tags
 
@@ -312,7 +316,7 @@ describe('block with config tag', { tags: '@smoke' }, () => {})
 --env grepTags=-@smoke
 ```
 
-See the [cypress/integration/describe-tags-spec.js](./cypress/integration/describe-tags-spec.js) file.
+See the [cypress/e2e/describe-tags-spec.js](./cypress/e2e/describe-tags-spec.js) file.
 
 **Note:** global function `describe` and `context` are aliases and both supported by this plugin.
 
@@ -416,8 +420,8 @@ it('runs on deploy', { tags: 'smoke' }, () => {
 This package comes with [src/index.d.ts](./src/index.d.ts) definition file that adds the property `tags` to the Cypress test overrides interface. Include this file in your specs or TS config settings. For example, you can load it using a reference comment
 
 ```js
-// cypress/integration/my-spec.js
-/// <reference types="cypress-grep" />
+// cypress/e2e/my-spec.js
+/// <reference types="@cypress/grep" />
 ```
 
 If you have `tsconfig.json` file, add this library to the types list
@@ -427,7 +431,7 @@ If you have `tsconfig.json` file, add this library to the types list
   "compilerOptions": {
     "target": "es5",
     "lib": ["es5", "dom"],
-    "types": ["cypress", "cypress-grep"]
+    "types": ["cypress", "@cypress/grep"]
   },
   "include": ["**/*.ts"]
 }
@@ -489,18 +493,18 @@ Cypress.grep('hello', '@smoke', 10)
 
 ## Debugging
 
-When debugging a problem, first make sure you are using the expected version of this plugin, as some features might be only available in the [later releases](https://github.com/cypress-io/cypress-grep/releases).
+When debugging a problem, first make sure you are using the expected version of this plugin, as some features might be only available in the [later releases](https://www.npmjs.com/package/@cypress/grep?activeTab=versions).
 
 ```
-# get the cypress-grep version using NPM
-$ npm ls cypress-grep
+# get the @cypress/grep version using NPM
+$ npm ls @cypress/grep
 ...
-└── cypress-grep@2.10.1
-# get the cypress-grep version using Yarn
-$ yarn why cypress-grep
+└── @cypress/grep@2.10.1
+# get the @cypress/grep version using Yarn
+$ yarn why @cypress/grep
 ...
-=> Found "cypress-grep@2.10.1"
-info Has been hoisted to "cypress-grep"
+=> Found "@cypress/grep@3.1.0"
+info Has been hoisted to "@cypress/grep"
 info This module exists because it's specified in "devDependencies".
 ...
 ```
@@ -517,44 +521,39 @@ Then I expect to see the grep string and the "filter tests" flag in the `env` ob
 
 ### Log messages
 
-This module uses [debug](https://github.com/visionmedia/debug#readme) to log verbose messages. You can enable the debug messages in the plugin file (runs when discovering specs to filter), and inside the browser to see how it determines which tests to run and to skip. When opening a new issue, please provide the debug logs from the plugin (if any) and from the browser.
+This module uses [debug](https://github.com/debug-js/debug#readme) to log verbose messages. You can enable the debug messages in the plugin file (runs when discovering specs to filter), and inside the browser to see how it determines which tests to run and to skip. When opening a new issue, please provide the debug logs from the plugin (if any) and from the browser.
 
 ### Debugging in the plugin
 
-Start Cypress with the environment variable `DEBUG=cypress-grep`. You will see a few messages from this plugin in the terminal output:
+Start Cypress with the environment variable `DEBUG=@cypress/grep`. You will see a few messages from this plugin in the terminal output:
 
 ```
-$ DEBUG=cypress-grep npx cypress run --env grep=works,grepFilterSpecs=true
-cypress-grep: tests with "works" in their names
-cypress-grep: filtering specs using "works" in the title
-  cypress-grep Cypress config env object: { grep: 'works', grepFilterSpecs: true }
+$ DEBUG=@cypress/grep npx cypress run --env grep=works,grepFilterSpecs=true
+@cypress/grep: tests with "works" in their names
+@cypress/grep: filtering specs using "works" in the title
+@cypress/grep Cypress config env object: { grep: 'works', grepFilterSpecs: true }
   ...
-  cypress-grep found 1 spec files +5ms
-  cypress-grep [ 'spec.js' ] +0ms
-  cypress-grep spec file spec.js +5ms
-  cypress-grep suite and test names: [ 'hello world', 'works', 'works 2 @tag1',
+  @cypress/grep found 1 spec files +5ms
+  @cypress/grep [ 'spec.js' ] +0ms
+  @cypress/grep spec file spec.js +5ms
+  @cypress/grep suite and test names: [ 'hello world', 'works', 'works 2 @tag1',
     'works 2 @tag1 @tag2', 'works @tag2' ] +0ms
-  cypress-grep found "works" in 1 specs +0ms
-  cypress-grep [ 'spec.js' ] +0ms
+  @cypress/grep found "works" in 1 specs +0ms
+  @cypress/grep [ 'spec.js' ] +0ms
 ```
 
 ### Debugging in the browser
 
-To enable debug console messages in the browser, from the DevTools console set `localStorage.debug='cypress-grep'` and run the tests again.
+To enable debug console messages in the browser, from the DevTools console set `localStorage.debug='@cypress/grep'` and run the tests again.
 
 ![Debug messages](./images/debug.png)
 
-To see how to debug this plugin, watch the video [Debug cypress-grep Plugin](https://youtu.be/4YMAERddHYA).
+To see how to debug this plugin, watch the video [Debug @cypress/grep Plugin](https://youtu.be/4YMAERddHYA).
 
 ## Examples
 
 - [cypress-grep-example](https://github.com/bahmutov/cypress-grep-example)
 - [todo-graphql-example](https://github.com/bahmutov/todo-graphql-example)
-
-## See also
-
-- [cypress-select-tests](https://github.com/bahmutov/cypress-select-tests)
-- [cypress-skip-test](https://github.com/cypress-io/cypress-skip-test)
 
 ## Migration guide
 
@@ -585,11 +584,11 @@ The above scenario was confusing - did you want to find all tests with title con
 
 ### from v2 to v3
 
-Version >= 3 of cypress-grep _only_ supports Cypress >= 10.
+Version >= 3 of @cypress/grep _only_ supports Cypress >= 10.
 
 ## Small Print
 
 License: MIT - do anything with the code, but don't blame me if it does not work.
 
-Support: if you find any problems with this module, email / tweet /
-[open issue](https://github.com/cypress-io/cypress/issues) on Github
+Support: if you find any problems with this module,
+[open issue](https://github.com/cypress-io/cypress/issues) on GitHub.

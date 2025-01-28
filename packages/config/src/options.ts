@@ -21,19 +21,18 @@ const BREAKING_OPTION_ERROR_KEY: Readonly<AllCypressErrorNames[]> = [
   'EXPERIMENTAL_NETWORK_STUBBING_REMOVED',
   'EXPERIMENTAL_RUN_EVENTS_REMOVED',
   'EXPERIMENTAL_SESSION_SUPPORT_REMOVED',
+  'EXPERIMENTAL_SESSION_AND_ORIGIN_REMOVED',
   'EXPERIMENTAL_SINGLE_TAB_RUN_MODE',
   'EXPERIMENTAL_SHADOW_DOM_REMOVED',
   'FIREFOX_GC_INTERVAL_REMOVED',
-  'NODE_VERSION_DEPRECATION_SYSTEM',
-  'NODE_VERSION_DEPRECATION_BUNDLED',
   'PLUGINS_FILE_CONFIG_OPTION_REMOVED',
+  'VIDEO_UPLOAD_ON_PASSES_REMOVED',
   'RENAMED_CONFIG_OPTION',
   'TEST_FILES_RENAMED',
 ] as const
 
 type ValidationOptions = {
   testingType: TestingType | null
-  experimentalSessionAndOrigin: boolean
 }
 
 export type BreakingOptionErrorKey = typeof BREAKING_OPTION_ERROR_KEY[number]
@@ -120,6 +119,11 @@ export const defaultSpecPattern = {
   component: '**/*.cy.{js,jsx,ts,tsx}',
 }
 
+export const defaultExcludeSpecPattern = {
+  e2e: '*.hot-update.js',
+  component: ['**/__snapshots__/*', '**/__image_snapshots__/*'],
+}
+
 // NOTE:
 // If you add/remove/change a config value, make sure to update the following
 // - cli/types/index.d.ts (including allowed config options on TestOptions)
@@ -166,6 +170,10 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     },
     validation: isValidConfig,
   }, {
+    name: 'defaultBrowser',
+    defaultValue: null,
+    validation: validate.isString,
+  }, {
     name: 'defaultCommandTimeout',
     defaultValue: 4000,
     validation: validate.isNumber,
@@ -194,10 +202,11 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     validation: validate.isNumber,
     overrideLevel: 'any',
   }, {
-    name: 'experimentalFetchPolyfill',
+    name: 'experimentalCspAllowList',
     defaultValue: false,
-    validation: validate.isBoolean,
-    isExperimental: true,
+    validation: validate.validateAny(validate.isBoolean, validate.isArrayIncludingAny('script-src-elem', 'script-src', 'default-src', 'form-action', 'child-src', 'frame-src')),
+    overrideLevel: 'never',
+    requireRestartOnChange: 'server',
   }, {
     name: 'experimentalInteractiveRunEvents',
     defaultValue: false,
@@ -205,8 +214,12 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     isExperimental: true,
     requireRestartOnChange: 'server',
   }, {
-    // TODO: remove with experimentalSessionAndOrigin. Fixed with: https://github.com/cypress-io/cypress/issues/21471
-    name: 'experimentalSessionAndOrigin',
+    name: 'experimentalRunAllSpecs',
+    defaultValue: false,
+    validation: validate.isBoolean,
+    isExperimental: true,
+  }, {
+    name: 'experimentalMemoryManagement',
     defaultValue: false,
     validation: validate.isBoolean,
     isExperimental: true,
@@ -216,6 +229,18 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     validation: validate.isBoolean,
     isExperimental: true,
     requireRestartOnChange: 'server',
+  }, {
+    name: 'injectDocumentDomain',
+    defaultValue: false,
+    validation: validate.isBoolean,
+    requireRestartOnChange: 'server',
+  }, {
+    name: 'experimentalOriginDependencies',
+    defaultValue: false,
+    validation: validate.isBoolean,
+    isExperimental: true,
+    overrideLevel: 'any',
+    requireRestartOnChange: 'browser',
   }, {
     name: 'experimentalSourceRewriting',
     defaultValue: false,
@@ -254,7 +279,7 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     requireRestartOnChange: 'server',
   }, {
     name: 'excludeSpecPattern',
-    defaultValue: (options: Record<string, any> = {}) => options.testingType === 'component' ? ['**/__snapshots__/*', '**/__image_snapshots__/*'] : '*.hot-update.js',
+    defaultValue: (options: Record<string, any> = {}) => options.testingType === 'component' ? defaultExcludeSpecPattern.component : defaultExcludeSpecPattern.e2e,
     validation: validate.isStringOrArrayOfStrings,
     overrideLevel: 'any',
   }, {
@@ -262,6 +287,11 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     defaultValue: false,
     validation: validate.isBoolean,
     overrideLevel: 'any',
+  }, {
+    name: 'justInTimeCompile',
+    defaultValue: true,
+    validation: validate.isBoolean,
+    requireRestartOnChange: 'server',
   }, {
     name: 'keystrokeDelay',
     defaultValue: 0,
@@ -272,9 +302,6 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     defaultValue: true,
     validation: validate.isBoolean,
     requireRestartOnChange: 'server',
-  }, {
-    name: 'nodeVersion',
-    validation: validate.isOneOf('bundled', 'system'),
   }, {
     name: 'numTestsKeptInMemory',
     defaultValue: 50,
@@ -331,10 +358,32 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     validation: validate.isNumber,
     overrideLevel: 'any',
   }, {
+    /**
+     * if experimentalStrategy is `detect-flake-and-pass-on-threshold`
+     * an no experimentalOptions are configured, the following configuration
+     * should be implicitly used:
+     * experimentalStrategy: 'detect-flake-and-pass-on-threshold',
+     * experimentalOptions: {
+     *   maxRetries: 2,
+     *   passesRequired: 2
+     * }
+     *
+     * if experimentalStrategy is `detect-flake-but-always-fail`
+     * an no experimentalOptions are configured, the following configuration
+     * should be implicitly used:
+     * experimentalStrategy: 'detect-flake-but-always-fail',
+     * experimentalOptions: {
+     *   maxRetries: 2,
+     *   stopIfAnyPassed: false
+     * }
+     */
     name: 'retries',
     defaultValue: {
       runMode: 0,
       openMode: 0,
+      // these values MUST be populated in order to display the experiment correctly inside the project settings in open mode
+      experimentalStrategy: undefined,
+      experimentalOptions: undefined,
     },
     validation: validate.isValidRetriesConfig,
     overrideLevel: 'any',
@@ -377,38 +426,17 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     overrideLevel: 'any',
   }, {
     name: 'testIsolation',
-    // TODO: https://github.com/cypress-io/cypress/issues/23093
-    // When experimentalSessionAndOrigin is removed and released as GA,
-    // update the defaultValue from undefined to 'on' and
-    // update this code to remove the check/override specific to enable
-    // 'on' by default when experimentalSessionAndOrigin=true
-    defaultValue: (options: Record<string, any> = {}) => {
-      if (options.testingType === 'component') {
-        return null
-      }
-
-      return options?.experimentalSessionAndOrigin || options?.config?.e2e?.experimentalSessionAndOrigin ? 'on' : null
-    },
+    defaultValue: true,
     validation: (key: string, value: any, opts: ValidationOptions) => {
-      const { testingType, experimentalSessionAndOrigin } = opts
+      const { testingType } = opts
 
-      if (testingType == null || testingType === 'component') {
-        return true
+      let configOpts = [true, false]
+
+      if (testingType === 'component') {
+        configOpts.pop()
       }
 
-      if (experimentalSessionAndOrigin && testingType === 'e2e') {
-        return validate.isOneOf('on', 'off')(key, value)
-      }
-
-      if (value == null) {
-        return true
-      }
-
-      return {
-        key,
-        value,
-        type: 'not set unless the experimentalSessionAndOrigin flag is turned on',
-      }
+      return validate.isOneOf(...configOpts)(key, value)
     },
     overrideLevel: 'suite',
   }, {
@@ -422,21 +450,17 @@ const driverConfigOptions: Array<DriverConfigOption> = [
     requireRestartOnChange: 'browser',
   }, {
     name: 'video',
-    defaultValue: true,
+    defaultValue: false,
     validation: validate.isBoolean,
   }, {
     name: 'videoCompression',
-    defaultValue: 32,
-    validation: validate.isNumberOrFalse,
+    defaultValue: false,
+    validation: validate.isValidCrfOrBoolean,
   }, {
     name: 'videosFolder',
     defaultValue: 'cypress/videos',
     validation: validate.isString,
     isFolder: true,
-  }, {
-    name: 'videoUploadOnPasses',
-    defaultValue: true,
-    validation: validate.isBoolean,
   }, {
     name: 'viewportHeight',
     defaultValue: (options: Record<string, any> = {}) => options.testingType === 'component' ? 500 : 660,
@@ -565,9 +589,20 @@ const runtimeOptions: Array<RuntimeConfigOption> = [
     validation: validate.isString,
     isInternal: true,
   }, {
-    name: 'xhrRoute',
-    defaultValue: '/xhrs/',
-    validation: validate.isString,
+    name: 'protocolEnabled',
+    defaultValue: false,
+    validation: validate.isBoolean,
+    isInternal: true,
+  }, {
+    name: 'hideCommandLog',
+    defaultValue: false,
+    validation: validate.isBoolean,
+    isInternal: true,
+  },
+  {
+    name: 'hideRunnerUi',
+    defaultValue: false,
+    validation: validate.isBoolean,
     isInternal: true,
   },
 ]
@@ -578,7 +613,7 @@ export const options: Array<DriverConfigOption | RuntimeConfigOption> = [
 ]
 
 /**
- * Values not allowed in 10.X+ in the root, e2e and component config
+ * Values not allowed in 10.X+ in the root, e2e or component config
  */
 export const breakingOptions: Readonly<BreakingOption[]> = [
   {
@@ -599,6 +634,11 @@ export const breakingOptions: Readonly<BreakingOption[]> = [
     errorKey: 'EXPERIMENTAL_SAMESITE_REMOVED',
     isWarning: true,
   }, {
+    name: 'experimentalJustInTimeCompile',
+    errorKey: 'EXPERIMENTAL_JIT_COMPILE_REMOVED',
+    isWarning: true,
+  },
+  {
     name: 'experimentalNetworkStubbing',
     errorKey: 'EXPERIMENTAL_NETWORK_STUBBING_REMOVED',
     isWarning: true,
@@ -611,9 +651,17 @@ export const breakingOptions: Readonly<BreakingOption[]> = [
     errorKey: 'EXPERIMENTAL_SESSION_SUPPORT_REMOVED',
     isWarning: true,
   }, {
+    name: 'experimentalSessionAndOrigin',
+    errorKey: 'EXPERIMENTAL_SESSION_AND_ORIGIN_REMOVED',
+    isWarning: true,
+  }, {
     name: 'experimentalShadowDomSupport',
     errorKey: 'EXPERIMENTAL_SHADOW_DOM_REMOVED',
     isWarning: true,
+  }, {
+    name: 'experimentalSkipDomainInjection',
+    errorKey: 'EXPERIMENTAL_SKIP_DOMAIN_INJECTION_REMOVED',
+    isWarning: false,
   }, {
     name: 'firefoxGcInterval',
     errorKey: 'FIREFOX_GC_INTERVAL_REMOVED',
@@ -628,35 +676,25 @@ export const breakingOptions: Readonly<BreakingOption[]> = [
     errorKey: 'INTEGRATION_FOLDER_REMOVED',
     isWarning: false,
   }, {
-    name: 'nodeVersion',
-    value: 'system',
-    errorKey: 'NODE_VERSION_DEPRECATION_SYSTEM',
-    isWarning: true,
-  }, {
-    name: 'nodeVersion',
-    value: 'bundled',
-    errorKey: 'NODE_VERSION_DEPRECATION_BUNDLED',
-    isWarning: true,
-  }, {
     name: 'pluginsFile',
     errorKey: 'PLUGINS_FILE_CONFIG_OPTION_REMOVED',
     isWarning: false,
-  }, {
+  },
+  {
     name: 'testFiles',
     errorKey: 'TEST_FILES_RENAMED',
     newName: 'specPattern',
     isWarning: false,
+  }, {
+    name: 'videoUploadOnPasses',
+    errorKey: 'VIDEO_UPLOAD_ON_PASSES_REMOVED',
+    isWarning: true,
   },
 ] as const
 
 export const breakingRootOptions: Array<BreakingOption> = [
   {
     name: 'baseUrl',
-    errorKey: 'CONFIG_FILE_INVALID_ROOT_CONFIG_E2E',
-    isWarning: false,
-    testingTypes: ['e2e'],
-  }, {
-    name: 'experimentalSessionAndOrigin',
     errorKey: 'CONFIG_FILE_INVALID_ROOT_CONFIG_E2E',
     isWarning: false,
     testingTypes: ['e2e'],
@@ -690,6 +728,23 @@ export const breakingRootOptions: Array<BreakingOption> = [
     errorKey: 'CONFIG_FILE_INVALID_ROOT_CONFIG',
     isWarning: false,
     testingTypes: ['e2e'],
+  }, {
+    name: 'experimentalRunAllSpecs',
+    errorKey: 'EXPERIMENTAL_RUN_ALL_SPECS_E2E_ONLY',
+    isWarning: false,
+    testingTypes: ['e2e'],
+  },
+  {
+    name: 'experimentalOriginDependencies',
+    errorKey: 'EXPERIMENTAL_ORIGIN_DEPENDENCIES_E2E_ONLY',
+    isWarning: false,
+    testingTypes: ['e2e'],
+  },
+  {
+    name: 'justInTimeCompile',
+    errorKey: 'JIT_COMPONENT_TESTING',
+    isWarning: false,
+    testingTypes: ['component'],
   },
 ]
 
@@ -699,12 +754,21 @@ export const testingTypeBreakingOptions: { e2e: Array<BreakingOption>, component
       name: 'experimentalSingleTabRunMode',
       errorKey: 'EXPERIMENTAL_SINGLE_TAB_RUN_MODE',
       isWarning: false,
-      testingTypes: ['e2e'],
     },
     {
       name: 'indexHtmlFile',
       errorKey: 'CONFIG_FILE_INVALID_TESTING_TYPE_CONFIG_E2E',
       isWarning: false,
+    },
+    {
+      name: 'justInTimeCompile',
+      errorKey: 'JIT_COMPONENT_TESTING',
+      isWarning: false,
+    },
+    {
+      name: 'injectDocumentDomain',
+      errorKey: 'INJECT_DOCUMENT_DOMAIN_DEPRECATION',
+      isWarning: true,
     },
   ],
   component: [
@@ -714,19 +778,28 @@ export const testingTypeBreakingOptions: { e2e: Array<BreakingOption>, component
       isWarning: false,
     },
     {
-      name: 'experimentalSessionAndOrigin',
-      errorKey: 'CONFIG_FILE_INVALID_TESTING_TYPE_CONFIG_COMPONENT',
-      isWarning: false,
-    },
-    {
       name: 'experimentalStudio',
       errorKey: 'EXPERIMENTAL_STUDIO_E2E_ONLY',
       isWarning: false,
-      testingTypes: ['component'],
     },
     {
       name: 'testIsolation',
       errorKey: 'CONFIG_FILE_INVALID_TESTING_TYPE_CONFIG_COMPONENT',
+      isWarning: false,
+    },
+    {
+      name: 'experimentalRunAllSpecs',
+      errorKey: 'EXPERIMENTAL_RUN_ALL_SPECS_E2E_ONLY',
+      isWarning: false,
+    },
+    {
+      name: 'experimentalOriginDependencies',
+      errorKey: 'EXPERIMENTAL_ORIGIN_DEPENDENCIES_E2E_ONLY',
+      isWarning: false,
+    },
+    {
+      name: 'injectDocumentDomain',
+      errorKey: 'INJECT_DOCUMENT_DOMAIN_E2E_ONLY',
       isWarning: false,
     },
   ],
