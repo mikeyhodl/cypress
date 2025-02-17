@@ -2,7 +2,6 @@
 
 import '@percy/cypress'
 import type { SnapshotOptions } from '@percy/core'
-import 'cypress-axe'
 
 export interface CustomSnapshotOptions extends SnapshotOptions{
   /**
@@ -53,54 +52,6 @@ declare global {
       percySnapshot(name?: string, options?: CustomSnapshotOptions): Chainable<() => void>
     }
   }
-}
-
-function setupAxeAndCheckA11y () {
-  if (Cypress.testingType === 'component') {
-    Cypress.Commands.add('injectAxe', () => {
-      // this is a work around for the issue with require.resolve in CT
-      // described here: https://github.com/component-driven/cypress-axe/issues/134
-      cy.window({ log: false }).then((window) => {
-        const axe = require('axe-core/axe.js')
-        const script = window.document.createElement('script')
-
-        script.innerHTML = axe.source
-        window.document.head.appendChild(script)
-      })
-    })
-  }
-
-  cy.injectAxe()
-
-  if (Cypress.testingType === 'component') {
-    // since components are isolated fragments, right off the bat
-    // there are some things we should avoid checking
-    cy.configureAxe({
-      rules: [
-        {
-          id: 'html-has-lang',
-          enabled: false,
-        },
-        {
-          id: 'landmark-one-main',
-          enabled: false,
-        },
-        {
-          id: 'page-has-heading-one',
-          enabled: false,
-        },
-        {
-          id: 'region',
-          enabled: false,
-        },
-      ],
-    })
-  }
-
-  Cypress.log({ displayName: '♿️ Accessibility Check ♿️' })
-
-  // passing undefined here so that we can set the final boolean to ignore failures for now
-  cy.checkA11y(undefined, undefined, undefined, true)
 }
 
 class ElementOverrideManager {
@@ -291,11 +242,9 @@ export const installCustomPercyCommand = ({ before, elementOverrides }: {before?
       // since Percy snapshots represent visually unique states in the application
       // doing an accessibility check here should cover all situations that need to a11y checks
 
-      setupAxeAndCheckA11y()
-
       return applySnapshotMutations({
         ...snapshotMutationOptions,
-        log: 'percy: skipping snapshot in interactive mode',
+        log: 'skipping Percy: hover to see snapshot',
       }).then((reset) => reset())
     }
 

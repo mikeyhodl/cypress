@@ -2,22 +2,29 @@ import {
   CookieJar,
   toughCookieToAutomationCookie,
   automationCookieToToughCookie,
+  SerializableAutomationCookie,
 } from '@packages/server/lib/util/cookies'
-import { Cookie as ToughCookie } from 'tough-cookie'
-import type { AutomationCookie } from '@packages/server/lib/automation/cookies'
+import type { Cookie as ToughCookie } from 'tough-cookie'
 
-const parseDocumentCookieString = (documentCookieString: string): AutomationCookie[] => {
+function isHostOnlyCookie (domain) {
+  return domain[0] !== '.'
+}
+
+const parseDocumentCookieString = (documentCookieString: string): SerializableAutomationCookie[] => {
   if (!documentCookieString || !documentCookieString.trim().length) return []
 
   return documentCookieString.split(';').map((cookieString) => {
     const [name, value] = cookieString.split('=')
 
+    let cookieDomain = location.hostname
+
     return {
       name: name.trim(),
       value: value.trim(),
-      domain: location.hostname,
+      domain: cookieDomain,
       expiry: null,
       httpOnly: false,
+      hostOnly: isHostOnlyCookie(cookieDomain),
       maxAge: null,
       path: null,
       sameSite: 'lax',
@@ -26,7 +33,7 @@ const parseDocumentCookieString = (documentCookieString: string): AutomationCook
   })
 }
 
-const sendCookieToServer = (cookie: AutomationCookie) => {
+const sendCookieToServer = (cookie: SerializableAutomationCookie) => {
   window.top!.postMessage({
     event: 'cross:origin:aut:set:cookie',
     data: {
@@ -45,7 +52,7 @@ const sendCookieToServer = (cookie: AutomationCookie) => {
 // document.cookie runs into cross-origin restrictions when the AUT is on
 // a different origin than top. The goal is to make it act like it would
 // if the user's app was run in top.
-export const patchDocumentCookie = (requestCookies: AutomationCookie[]) => {
+export const patchDocumentCookie = (requestCookies: SerializableAutomationCookie[]) => {
   const url = location.href
   const domain = location.hostname
   const cookieJar = new CookieJar()
@@ -57,10 +64,21 @@ export const patchDocumentCookie = (requestCookies: AutomationCookie[]) => {
     }).join('; ')
   }
 
-  const addCookies = (cookies: AutomationCookie[]) => {
+  const addCookies = (cookies: SerializableAutomationCookie[]) => {
     cookies.forEach((cookie) => {
       cookieJar.setCookie(automationCookieToToughCookie(cookie, domain), url, undefined)
     })
+  }
+
+  const setCookie = (cookie: ToughCookie | string) => {
+    try {
+      return cookieJar.setCookie(cookie, url, undefined)
+    } catch (err) {
+      // it's possible setting the cookie fails because the domain does not
+      // match. this is expected and okay to do nothing, since it wouldn't be
+      // set in the browser anyway
+      return
+    }
   }
 
   // requestCookies are ones included with the page request that's now being
@@ -77,25 +95,51 @@ export const patchDocumentCookie = (requestCookies: AutomationCookie[]) => {
       const stringValue = `${newValue}`
       const parsedCookie = CookieJar.parse(stringValue)
 
+      if (parsedCookie?.hostOnly === null) {
+        // we want to make sure the hostOnly property is respected when syncing with CDP/extension to prevent duplicates.
+        // in the case it is not set, we need to calculate it
+        parsedCookie.hostOnly = isHostOnlyCookie(parsedCookie.domain || domain)
+      }
+
       // if result is undefined, it was invalid and couldn't be parsed
       if (!parsedCookie) return getDocumentCookieValue()
+
+      // if the cookie is expired, remove it in our cookie jar
+      // and via setting it inside our automation client with the correct expiry.
+      // This will have the effect of removing the cookie
+      if (parsedCookie.expiryTime() < Date.now()) {
+        cookieJar.removeCookie({
+          name: parsedCookie.key,
+          path: parsedCookie.path || '/',
+          domain: parsedCookie.domain as string,
+        })
+
+        // send the cookie to the server so it can be removed from the browser
+        // via automation. If the cookie expiry is set inside the server-side cookie jar,
+        // the cookie will be automatically removed.
+        sendCookieToServer(toughCookieToAutomationCookie(parsedCookie, domain))
+
+        return getDocumentCookieValue()
+      }
 
       // we should be able to pass in parsedCookie here instead of the string
       // value, but tough-cookie doesn't recognize it using an instanceof
       // check and throws an error. because we can't, we have to massage
       // some of the properties below to be correct
-      const cookie = cookieJar.setCookie(stringValue, url, undefined)!
+      const cookie = setCookie(stringValue)
 
-      cookie.sameSite = parsedCookie.sameSite
+      if (cookie) {
+        cookie.sameSite = parsedCookie.sameSite
 
-      if (!parsedCookie.path) {
-        cookie.path = '/'
+        if (!parsedCookie.path) {
+          cookie.path = '/'
+        }
+
+        // send the cookie to the server so it can be set in the browser via
+        // automation and in our server-side cookie jar so it's available
+        // to subsequent injections
+        sendCookieToServer(toughCookieToAutomationCookie(cookie, domain))
       }
-
-      // send the cookie to the server so it can be set in the browser via
-      // automation and in our server-side cookie jar so it's available
-      // to subsequent injections
-      sendCookieToServer(toughCookieToAutomationCookie(cookie, domain))
 
       return getDocumentCookieValue()
     },
@@ -110,8 +154,8 @@ export const patchDocumentCookie = (requestCookies: AutomationCookie[]) => {
 
     // the following listeners are called from Cypress cookie commands, so that
     // the document.cookie value is updated optimistically
-    Cypress.on('set:cookie', (cookie: AutomationCookie) => {
-      cookieJar.setCookie(automationCookieToToughCookie(cookie, domain), url, undefined)
+    Cypress.on('set:cookie', (cookie: SerializableAutomationCookie) => {
+      setCookie(automationCookieToToughCookie(cookie, domain))
     })
 
     Cypress.on('clear:cookie', (name: string) => {

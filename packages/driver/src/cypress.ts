@@ -15,6 +15,7 @@ import $Commands from './cypress/commands'
 import { $Cy } from './cypress/cy'
 import $dom from './dom'
 import $Downloads from './cypress/downloads'
+import $ensure from './cypress/ensure'
 import $errorMessages from './cypress/error_messages'
 import $errUtils from './cypress/error_utils'
 import { create as createLogFn, LogUtils } from './cypress/log'
@@ -43,6 +44,10 @@ import { PrimaryOriginCommunicator, SpecBridgeCommunicator } from './cross-origi
 import { setupAutEventHandlers } from './cypress/aut_event_handlers'
 
 import type { CachedTestState } from '@packages/types'
+import { DocumentDomainInjection } from '@packages/network/lib/document-domain-injection'
+import { setSpecContentSecurityPolicy } from './util/privileged_channel'
+
+import { telemetry } from '@packages/telemetry/src/browser'
 
 const debug = debugFn('cypress:driver:cypress')
 
@@ -52,6 +57,8 @@ declare global {
     Cypress: Cypress.Cypress
     Runner: any
     cy: Cypress.cy
+    // eval doesn't exist on the built-in Window type for some reason
+    eval (expression: string): any
   }
 }
 
@@ -110,6 +117,8 @@ class $Cypress {
   log: any
   isBrowser: any
   browserMajorVersion: any
+  // This is NodeEventEmitter['emit'], but typescript cannot determine that it is
+  // definitively initialized due to being initialized with $Events.extend(this)
   emit: any
   emitThen: any
   emitMap: any
@@ -126,6 +135,7 @@ class $Cypress {
   Chainer = $Chainer
   Command = $Command
   dom = $dom
+  ensure = $ensure
   errorMessages = $errorMessages
   Keyboard = $Keyboard
   Location = $Location
@@ -178,9 +188,7 @@ class $Cypress {
   configure (config: Record<string, any> = {}) {
     const domainName = config.remote ? config.remote.domainName : undefined
 
-    // set domainName but allow us to turn
-    // off this feature in testing
-    if (domainName && config.testingType === 'e2e') {
+    if (DocumentDomainInjection.InjectionBehavior(config).shouldInjectDocumentDomain(domainName)) {
       document.domain = domainName
     }
 
@@ -219,8 +227,7 @@ class $Cypress {
     // change this in the NEXT_BREAKING
     const { env } = config
 
-    // TODO: remove rawJson - https://github.com/cypress-io/cypress/issues/23945
-    config = _.omit(config, 'env', 'remote', 'resolved', 'scaffoldedFiles', 'state', 'testingType', 'isCrossOriginSpecBridge')
+    config = _.omit(config, 'env', 'rawJson', 'remote', 'resolved', 'scaffoldedFiles', 'state', 'testingType', 'isCrossOriginSpecBridge')
 
     _.extend(this, browserInfo(config))
 
@@ -228,18 +235,26 @@ class $Cypress {
 
     /*
      * As part of the Detached DOM effort, we're changing the way subjects are determined in Cypress.
-     * While we usually consider cy.state() to be internal, in the case of cy.state('subject'),
-     * cypress-testing-library, one of our most popular plugins, relies on it.
+     * While we usually consider cy.state() to be internal, in the case of cy.state('subject') and cy.state('withinSubject'),
+     * cypress-testing-library, one of our most popular plugins, relies on them.
      * https://github.com/testing-library/cypress-testing-library/blob/1af9f2f28b2ca62936da8a8acca81fc87e2192f7/src/utils.js#L9
      *
-     * Therefore, we've added this shim to continue to support them. The library is actively maintained, so this
+     * Therefore, we've added these shims to continue to support them. The library is actively maintained, so this
      * shouldn't need to stick around too long (written 07/22).
      */
     Object.defineProperty(this.state(), 'subject', {
       get: () => {
         $errUtils.warnByPath('subject.state_subject_deprecated')
 
-        return this.cy.currentSubject()
+        return this.cy.subject()
+      },
+    })
+
+    Object.defineProperty(this.state(), 'withinSubject', {
+      get: () => {
+        $errUtils.warnByPath('subject.state_withinsubject_deprecated')
+
+        return this.cy.getSubjectFromChain(this.cy.state('withinSubjectChain'))
       },
     })
 
@@ -259,7 +274,16 @@ class $Cypress {
       }
 
       if (_.isObject(testRetries)) {
-        return testRetries[this.config('isInteractive') ? 'openMode' : 'runMode']
+        const retriesAsNumberOrBoolean = testRetries[this.config('isInteractive') ? 'openMode' : 'runMode']
+
+        // If experimentalRetries are configured, an experimentalStrategy is present, and the retries configured is a boolean
+        // then we need to set the mocha '_retries' to 'maxRetries' present in the 'experimentalOptions' configuration.
+        if (testRetries['experimentalStrategy'] && _.isBoolean(retriesAsNumberOrBoolean) && retriesAsNumberOrBoolean) {
+          return testRetries['experimentalOptions'].maxRetries
+        }
+
+        // Otherwise, this is a number and falls back to default
+        return retriesAsNumberOrBoolean
       }
 
       return null
@@ -328,35 +352,32 @@ class $Cypress {
 
     this.events.proxyTo(this.cy)
 
-    $scriptUtils.runScripts(specWindow, scripts)
+    $scriptUtils.runScripts({
+      browser: this.config('browser'),
+      scripts,
+      specWindow,
+      testingType: this.testingType,
+    })
+    .then(() => {
+      if (this.testingType === 'e2e') {
+        return setSpecContentSecurityPolicy(specWindow)
+      }
+    })
     .catch((error) => {
       this.runner.onSpecError('error')({ error })
     })
     .then(() => {
       return (new Promise((resolve) => {
-        if (this.$autIframe) {
+        if (this.$autIframe.prop('contentWindow')) {
           resolve()
+        } else if (this.$autIframe) {
+          this.$autIframe.on('load', resolve)
         } else {
           // block initialization if the iframe has not been created yet
           // Used in CT when async chunks for plugins take their time to download/parse
           this._onInitialize = resolve
         }
       }))
-    })
-    .then(() => {
-      // in order to utilize focusmanager.testingmode and trick browser into being in focus even when not focused
-      // this is critical for headless mode since otherwise the browser never gains focus
-      if (this.browser.isHeadless && this.isBrowser({ family: 'firefox' })) {
-        window.addEventListener('blur', () => {
-          this.backend('firefox:window:focus')
-        })
-
-        if (!document.hasFocus()) {
-          return this.backend('firefox:window:focus')
-        }
-      }
-
-      return
     })
     .then(() => {
       this.cy.initialize(this.$autIframe)
@@ -411,7 +432,10 @@ class $Cypress {
       case 'runner:end':
         $sourceMapUtils.destroySourceMapConsumers()
 
+        telemetry.getSpan('cypress:app')?.end()
+
         // mocha runner has finished running the tests
+        // TODO: it would be nice to await this emit before preceding.
         this.emit('run:end')
 
         this.maybeEmitCypressInCypress('mocha', 'end', args[0])
@@ -431,7 +455,6 @@ class $Cypress {
         }
 
         break
-
       case 'runner:suite:end':
         // mocha runner finished processing a suite
         this.maybeEmitCypressInCypress('mocha', 'suite end', ...args)
@@ -441,7 +464,6 @@ class $Cypress {
         }
 
         break
-
       case 'runner:hook:start':
         // mocha runner started processing a hook
 
@@ -541,8 +563,20 @@ class $Cypress {
         break
 
       case 'runner:test:before:run:async':
+        this.maybeEmitCypressInCypress('mocha', 'test:before:run:async', args[0])
+
         // TODO: handle timeouts here? or in the runner?
         return this.emitThen('test:before:run:async', ...args)
+
+      case 'runner:test:before:after:run:async':
+        this.maybeEmitCypressInCypress('mocha', 'test:before:after:run:async', args[0], args[2])
+
+        return this.emitThen('test:before:after:run:async', ...args)
+
+      case 'runner:test:after:run:async':
+        this.maybeEmitCypressInCypress('mocha', 'test:after:run:async', args[0])
+
+        return this.emitThen('test:after:run:async', ...args)
 
       case 'runner:runnable:after:run:async':
         return this.emitThen('runnable:after:run:async', ...args)
@@ -575,11 +609,23 @@ class $Cypress {
         return this.emit('after:all:screenshots', ...args)
 
       case 'command:log:added':
+        if (args[0].hidden) {
+          this.emit('_log:added', ...args)
+
+          return // do not emit hidden logs to public apis
+        }
+
         this.runner?.addLog(args[0], this.config('isInteractive'))
 
         return this.emit('log:added', ...args)
 
       case 'command:log:changed':
+        if (args[0].hidden) {
+          this.emit('_log:changed', ...args)
+
+          return // do not emit hidden logs to public apis
+        }
+
         // Cypress logs will only trigger an update every 4 ms so there is a
         // chance the runner has been torn down when the update is triggered.
         this.runner?.addLog(args[0], this.config('isInteractive'))
@@ -611,8 +657,14 @@ class $Cypress {
       case 'cy:command:start':
         return this.emit('command:start', ...args)
 
+      case 'cy:command:start:async':
+        return this.emitThen('command:start:async', ...args)
+
       case 'cy:command:end':
         return this.emit('command:end', ...args)
+
+      case 'cy:command:failed':
+        return this.emit('command:failed', ...args)
 
       case 'cy:skipped:command:end':
         return this.emit('skipped:command:end', ...args)
@@ -644,6 +696,9 @@ class $Cypress {
       case 'cy:snapshot':
         return this.emit('snapshot', ...args)
 
+      case 'cy:protocol-snapshot':
+        return this.emit('cy:protocol-snapshot', ...args)
+
       case 'cy:before:stability:release':
         return this.emitThen('before:stability:release')
 
@@ -669,6 +724,9 @@ class $Cypress {
 
       case 'app:navigation:changed':
         return this.emit('navigation:changed', ...args)
+
+      case 'app:download:received':
+        return this.emit('download:received')
 
       case 'app:form:submitted':
         return this.emit('form:submitted', args[0])
@@ -773,6 +831,11 @@ class $Cypress {
     return throwPrivateCommandInterface('addUtilityCommand')
   }
 
+  // Cypress.require() is only valid inside the cy.origin() callback
+  require () {
+    $errUtils.throwErrByPath('require.invalid_outside_origin')
+  }
+
   get currentTest () {
     const r = this.cy.state('runnable')
 
@@ -791,6 +854,12 @@ class $Cypress {
       title: currentTestRunnable.title,
       titlePath: currentTestRunnable.titlePath(),
     }
+  }
+
+  get currentRetry (): number {
+    const ctx = this.cy.state('runnable').ctx
+
+    return ctx?.currentTest?._currentRetry || ctx?.test?._currentRetry
   }
 
   static create (config: Record<string, any>) {

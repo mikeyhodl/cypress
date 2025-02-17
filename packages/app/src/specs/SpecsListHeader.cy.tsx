@@ -1,5 +1,6 @@
 import SpecsListHeader from './SpecsListHeader.vue'
 import { defineComponent, ref, h } from 'vue'
+// tslint:disable-next-line: no-implicit-dependencies - unsure how to handle these
 import { defaultMessages } from '@cy/i18n'
 
 const buttonSelector = '[data-cy=new-spec-button]'
@@ -51,7 +52,7 @@ describe('<SpecsListHeader />', { keystrokeDelay: 0 }, () => {
     const showCreateSpecModal = cy.spy().as('new-spec')
     const search = ref('')
 
-    cy.mount(() => (<div class="max-w-800px p-12 resize overflow-auto"><SpecsListHeader
+    cy.mount(() => (<div class="max-w-[800px] p-12 resize overflow-auto"><SpecsListHeader
       modelValue={search.value}
       onShowCreateSpecModal={showCreateSpecModal}
       resultCount={0}
@@ -67,7 +68,7 @@ describe('<SpecsListHeader />', { keystrokeDelay: 0 }, () => {
     const search = ref('')
 
     cy.mount(() => (
-      <div class="max-w-800px p-12 resize overflow-auto">
+      <div class="max-w-[800px] p-12 resize overflow-auto">
         <SpecsListHeader
           modelValue={search.value}
           onShowSpecPatternModal={onShowSpecPatternModal}
@@ -79,13 +80,11 @@ describe('<SpecsListHeader />', { keystrokeDelay: 0 }, () => {
     .click()
     .get('@show-spec-pattern-modal')
     .should('have.been.called')
-
-    cy.percySnapshot()
   })
 
   it('shows the count correctly when not searching', () => {
     const mountWithSpecCount = (count = 0) => {
-      cy.mount(() => (<div class="max-w-800px p-12 resize overflow-auto"><SpecsListHeader
+      cy.mount(() => (<div class="max-w-[800px] p-12 resize overflow-auto"><SpecsListHeader
         modelValue={''}
         specCount={count}
       /></div>))
@@ -96,43 +95,27 @@ describe('<SpecsListHeader />', { keystrokeDelay: 0 }, () => {
     .should('be.visible')
     .and('have.attr', 'aria-live', 'polite')
 
-    cy.percySnapshot('No matches')
-
     mountWithSpecCount(1)
     cy.contains('1 match').should('be.visible')
 
-    cy.percySnapshot('Singular Match')
-
     mountWithSpecCount(100)
     cy.contains('100 matches').should('be.visible')
-
-    cy.percySnapshot('Plural Match')
   })
 
   it('shows the count correctly while searching', () => {
-    const mountWithCounts = (resultCount = 0, specCount = 0) => {
-      cy.mount(() => (<div class="max-w-800px p-12 resize overflow-auto"><SpecsListHeader
+    const counts = [[0, 0], [0, 22], [0, 1], [1, 1], [5, 22]]
+
+    cy.mount(() => counts.map(([resultCount, specCount]) => (
+      <div class="max-w-[800px] p-12 resize overflow-auto"><SpecsListHeader
         modelValue={'foo'}
         resultCount={resultCount}
         specCount={specCount}
-      /></div>))
-    }
+      /></div>)))
 
-    mountWithCounts(0, 0)
     cy.contains('No matches')
-
-    mountWithCounts(0, 22)
     cy.contains('0 of 22 matches')
-
-    mountWithCounts(0, 1)
     cy.contains('0 of 1 match').should('be.visible')
-
-    mountWithCounts(1, 1)
     cy.contains('1 of 1 match').should('be.visible')
-
-    mountWithCounts(5, 22)
     cy.contains('5 of 22 matches').should('be.visible')
-
-    cy.percySnapshot()
   })
 })
