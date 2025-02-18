@@ -21,8 +21,6 @@ import type {
 } from 'vue'
 import type { MountingOptions as VTUMountingOptions, VueWrapper } from '@vue/test-utils'
 import {
-  injectStylesBeforeElement,
-  StyleOptions,
   getContainerEl,
   setupHooks,
 } from '@cypress/mount-utils'
@@ -44,6 +42,7 @@ const {
 export { VueTestUtils }
 
 const DEFAULT_COMP_NAME = 'unknown'
+const VUE_ROOT = '__cy_vue_root'
 
 type GlobalMountOptions = Required<VTUMountingOptions<any>>['global']
 
@@ -68,28 +67,18 @@ type MountingOptions<Props, Data = {}> = Omit<VTUMountingOptions<Props, Data>, '
     use?: GlobalMountOptions['plugins']
     mixin?: GlobalMountOptions['mixins']
   }
-} & Partial<StyleOptions>
+}
 
 export type CyMountOptions<Props, Data = {}> = MountingOptions<Props, Data>
 
-Cypress.on('run:start', () => {
-  // `mount` is designed to work with component testing only.
-  // it assumes ROOT_SELECTOR exists, which is not the case in e2e.
-  // if the user registers a custom command that imports `cypress/vue`,
-  // this event will be registered and cause an error when the user
-  // launches e2e (since it's common to use Cypress for both CT and E2E.
-  // https://github.com/cypress-io/cypress/issues/17438
-  if (Cypress.testingType !== 'component') {
-    return
-  }
+const cleanup = () => {
+  Cypress.vueWrapper?.unmount()
+  Cypress.$(`#${VUE_ROOT}`).remove()
 
-  Cypress.on('test:before:run', () => {
-    Cypress.vueWrapper?.unmount()
-    const el = getContainerEl()
+  ;(Cypress as any).vueWrapper = null
 
-    el.innerHTML = ''
-  })
-})
+  ;(Cypress as any).vue = null
+}
 
 /**
  * The types for mount have been copied directly from the VTU mount
@@ -102,6 +91,7 @@ Cypress.on('run:start', () => {
  * `MountOptions` are modifying, including some Cypress specific options like `styles`.
  * The return type is different. Instead of VueWrapper, it's Cypress.Chainable<VueWrapper<...>>.
  */
+
 type PublicProps = VNodeProps & AllowedComponentProps & ComponentCustomProps
 
 type ComponentMountingOptions<T> = T extends DefineComponent<
@@ -129,7 +119,10 @@ export function mount<V extends {}>(
     __vccOpts: any
   },
   options?: MountingOptions<any> & Record<string, any>
-): Cypress.Chainable<VueWrapper<ComponentPublicInstance<V>>>
+): Cypress.Chainable<{
+  wrapper: VueWrapper<ComponentPublicInstance<V>>
+  component: VueWrapper<ComponentPublicInstance<V>>['vm']
+}>
 
 // Class component (without vue-class-component) - props
 export function mount<V extends {}, P>(
@@ -139,7 +132,10 @@ export function mount<V extends {}, P>(
     defaultProps?: Record<string, Prop<any>> | string[]
   },
   options?: MountingOptions<P & PublicProps> & Record<string, any>
-): Cypress.Chainable<VueWrapper<ComponentPublicInstance<V>>>
+): Cypress.Chainable<{
+  wrapper: VueWrapper<ComponentPublicInstance<V>>
+  component: VueWrapper<ComponentPublicInstance<V>>['vm']
+}>
 
 // Class component - no props
 export function mount<V extends {}>(
@@ -148,7 +144,10 @@ export function mount<V extends {}>(
     registerHooks(keys: string[]): void
   },
   options?: MountingOptions<any> & Record<string, any>
-): Cypress.Chainable<VueWrapper<ComponentPublicInstance<V>>>
+): Cypress.Chainable<{
+  wrapper: VueWrapper<ComponentPublicInstance<V>>
+  component: VueWrapper<ComponentPublicInstance<V>>['vm']
+}>
 
 // Class component - props
 export function mount<V extends {}, P>(
@@ -158,13 +157,19 @@ export function mount<V extends {}, P>(
     registerHooks(keys: string[]): void
   },
   options?: MountingOptions<P & PublicProps> & Record<string, any>
-): Cypress.Chainable<VueWrapper<ComponentPublicInstance<V>>>
+): Cypress.Chainable<{
+  wrapper: VueWrapper<ComponentPublicInstance<V>>
+  component: VueWrapper<ComponentPublicInstance<V>>['vm']
+}>
 
 // Functional component with emits
 export function mount<Props extends {}, E extends EmitsOptions = {}>(
   originalComponent: FunctionalComponent<Props, E>,
   options?: MountingOptions<Props & PublicProps> & Record<string, any>
-): Cypress.Chainable<VueWrapper<ComponentPublicInstance<Props>>>
+): Cypress.Chainable<{
+  wrapper: VueWrapper<ComponentPublicInstance<Props>>
+  component: VueWrapper<ComponentPublicInstance<Props>>['vm']
+}>
 
 // Component declared with defineComponent
 export function mount<
@@ -200,32 +205,54 @@ export function mount<
     D
   > &
   Record<string, any>
-): Cypress.Chainable<
-  VueWrapper<
-    InstanceType<
-      DefineComponent<
-        PropsOrPropOptions,
-        RawBindings,
-        D,
-        C,
-        M,
-        Mixin,
-        Extends,
-        E,
-        EE,
-        PP,
-        Props,
-        Defaults
-      >
+): Cypress.Chainable<{
+
+  wrapper: VueWrapper<
+  InstanceType<
+    DefineComponent<
+      PropsOrPropOptions,
+      RawBindings,
+      D,
+      C,
+      M,
+      Mixin,
+      Extends,
+      EmitsOptions,
+      EE,
+      PP,
+      Props,
+      Defaults
     >
   >
 >
+  component: VueWrapper<
+  InstanceType<
+    DefineComponent<
+      PropsOrPropOptions,
+      RawBindings,
+      D,
+      C,
+      M,
+      Mixin,
+      Extends,
+      EmitsOptions,
+      EE,
+      PP,
+      Props,
+      Defaults
+    >
+  >
+>['vm']
+}>
 
 // component declared by vue-tsc ScriptSetup
-export function mount<T extends DefineComponent<any, any, any, any>>(
+export function mount<T extends DefineComponent<any, any, any, any, any>>(
   component: T,
   options?: ComponentMountingOptions<T>
-): Cypress.Chainable<VueWrapper<InstanceType<T>>>
+): Cypress.Chainable<{
+  wrapper: VueWrapper<InstanceType<T>>
+  component: VueWrapper<InstanceType<T>>['vm']
+}>
 
 // Component declared with no props
 export function mount<
@@ -251,7 +278,18 @@ export function mount<
     EE
   >,
   options?: MountingOptions<Props & PublicProps, D>
-): Cypress.Chainable<VueWrapper<ComponentPublicInstance<Props, RawBindings, D, C, M, E, VNodeProps & Props>>> & Record<string, any>
+): Cypress.Chainable<{
+  wrapper: VueWrapper<
+
+  ComponentPublicInstance<Props, RawBindings, D, C, M, E, VNodeProps & Props>
+> &
+  Record<string, any>
+  component: VueWrapper<
+
+  ComponentPublicInstance<Props, RawBindings, D, C, M, E, VNodeProps & Props>
+> &
+  Record<string, any>['vm']
+}>
 
 // Component declared with { props: [] }
 export function mount<
@@ -281,7 +319,10 @@ export function mount<
     Props
   >,
   options?: MountingOptions<Props & PublicProps, D>
-): Cypress.Chainable<VueWrapper<ComponentPublicInstance<Props, RawBindings, D, C, M, E>>>
+): Cypress.Chainable<{
+  wrapper: VueWrapper<ComponentPublicInstance<Props, RawBindings, D, C, M, E>>
+  component: VueWrapper<ComponentPublicInstance<Props, RawBindings, D, C, M, E>>['vm']
+}>
 
 // Component declared with { props: { ... } }
 export function mount<
@@ -309,30 +350,57 @@ export function mount<
     EE
   >,
   options?: MountingOptions<ExtractPropTypes<PropsOptions> & PublicProps, D>
-): Cypress.Chainable<
-  VueWrapper<
-    ComponentPublicInstance<
-      ExtractPropTypes<PropsOptions>,
-      RawBindings,
-      D,
-      C,
-      M,
-      E,
-      VNodeProps & ExtractPropTypes<PropsOptions>
-    >
+): Cypress.Chainable<{
+  wrapper: VueWrapper<
+  ComponentPublicInstance<
+    ExtractPropTypes<PropsOptions>,
+    RawBindings,
+    D,
+    C,
+    M,
+    E,
+    VNodeProps & ExtractPropTypes<PropsOptions>
   >
 >
+  component: VueWrapper<
+  ComponentPublicInstance<
+    ExtractPropTypes<PropsOptions>,
+    RawBindings,
+    D,
+    C,
+    M,
+    E,
+    VNodeProps & ExtractPropTypes<PropsOptions>
+  >
+>['vm']
+}>
 
-// implementation
+/**
+ * Mounts a component and returns an object containing the component and VueWrapper
+ * @param componentOptions
+ * @param options
+ * @returns {Cypress.Chainable<{wrapper: VueWrapper<T>, component: T}>}
+ * @see {@link https://on.cypress.io/mounting-vue} for more details.
+ * @example
+ * import { mount } from '@cypress/vue'
+ * import { Stepper } from './Stepper.vue'
+ *
+ * it('mounts', () => {
+ *   cy.mount(Stepper)
+ *   cy.get('[data-cy=increment]').click()
+ *   cy.get('[data-cy=counter]').should('have.text', '1')
+ * })
+ */
 export function mount (componentOptions: any, options: any = {}) {
-  // wait for cypress to load
+  // Remove last mounted component if cy.mount is called more than once in a test
+  cleanup()
+
+  // then wait for cypress to load
   return cy.then(() => {
     // @ts-ignore
     const document: Document = cy.state('document')
 
     const el = getContainerEl()
-
-    injectStylesBeforeElement(options, document, el)
 
     // merge the extensions with global
     if (options.extensions) {
@@ -343,7 +411,7 @@ export function mount (componentOptions: any, options: any = {}) {
 
     const componentNode = document.createElement('div')
 
-    componentNode.id = '__cy_vue_root'
+    componentNode.id = VUE_ROOT
 
     el.append(componentNode)
 
@@ -354,7 +422,6 @@ export function mount (componentOptions: any, options: any = {}) {
     Cypress.vue = wrapper.vm as ComponentPublicInstance
 
     return cy
-    .wrap(wrapper, { log: false })
     .wait(1, { log: false })
     .then(() => {
       if (options.log !== false) {
@@ -367,9 +434,12 @@ export function mount (componentOptions: any, options: any = {}) {
         })
       }
 
-      // by returning undefined we keep the previous subject
-      // which is the mounted component
-      return undefined
+      const returnVal = {
+        wrapper,
+        component: wrapper.vm,
+      }
+
+      return returnVal
     })
   })
 }
@@ -398,21 +468,6 @@ function getComponentDisplayName (componentOptions: any): string {
   return DEFAULT_COMP_NAME
 }
 
-/**
- * Helper function for mounting a component quickly in test hooks.
- * @example
- *  import {mountCallback} from '@cypress/vue'
- *  beforeEach(mountVue(component, options))
- */
-export function mountCallback (
-  component: any,
-  options: any = {},
-): () => Cypress.Chainable {
-  return () => {
-    return mount(component, options)
-  }
-}
-
 // Side effects from "import { mount } from '@cypress/<my-framework>'" are annoying, we should avoid doing this
 // by creating an explicit function/import that the user can register in their 'component.js' support file,
 // such as:
@@ -421,4 +476,4 @@ export function mountCallback (
 //    import { registerCT } from 'cypress/<my-framework>'
 //    registerCT()
 // Note: This would be a breaking change
-setupHooks()
+setupHooks(cleanup)

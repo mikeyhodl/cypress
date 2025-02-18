@@ -1,6 +1,6 @@
 /* eslint-disable padding-line-between-statements */
 import _ from 'lodash'
-import { computed, observable } from 'mobx'
+import { computed, observable, makeObservable } from 'mobx'
 
 import type { FileDetails } from '@packages/types'
 
@@ -25,12 +25,12 @@ export interface CodeFrame extends FileDetails {
 export interface ErrProps {
   name: string
   message: string
+  isRecovered: boolean
   stack: string
   parsedStack: ParsedStackLine[]
   docsUrl: string | string[]
   templateType: string
   codeFrame: CodeFrame
-  isRecovered: boolean
 }
 
 export default class Err {
@@ -45,6 +45,7 @@ export default class Err {
   @observable isRecovered: boolean = false
 
   constructor (props?: Partial<ErrProps>) {
+    makeObservable(this)
     this.update(props)
   }
 
